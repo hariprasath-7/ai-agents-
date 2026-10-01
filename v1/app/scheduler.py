@@ -16,7 +16,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app.config import settings
 from app.database import Todo, session_scope
-from app.telegram import send_message
+from app.telegram import build_task_keyboard, send_message
 from app.tools import USER_TZ
 
 logger = logging.getLogger(__name__)
@@ -106,7 +106,11 @@ async def check_reminders_loop() -> None:
                 else:
                     for task in due_tasks:
                         try:
-                            await send_message(chat_id, _reminder_text(task))
+                            await send_message(
+                                chat_id,
+                                _reminder_text(task),
+                                reply_markup=build_task_keyboard(task["id"]),
+                            )
                             await run_in_threadpool(_mark_reminded, task["id"])
                             logger.info("Sent reminder for task #%s.", task["id"])
                         except Exception:  # noqa: BLE001 - keep the loop alive

@@ -28,10 +28,13 @@ async def send_message(
     text: str,
     *,
     disable_web_page_preview: bool = True,
+    reply_markup: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Send a text message to a chat via the Telegram Bot API.
 
-    Long messages are truncated to Telegram's 4096-character limit.
+    Long messages are truncated to Telegram's 4096-character limit. An
+    optional ``reply_markup`` (e.g. from ``build_task_keyboard``) attaches an
+    inline keyboard to the message.
     """
     if len(text) > _MAX_MESSAGE_LEN:
         text = text[: _MAX_MESSAGE_LEN - 1] + "…"
@@ -42,6 +45,8 @@ async def send_message(
         "parse_mode": "HTML",
         "disable_web_page_preview": disable_web_page_preview,
     }
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.post(f"{_base_url()}/sendMessage", json=payload)
         if resp.status_code == 400:
@@ -49,6 +54,57 @@ async def send_message(
             logger.warning("sendMessage 400 with HTML parse_mode; retrying without parse_mode")
             payload.pop("parse_mode", None)
             resp = await client.post(f"{_base_url()}/sendMessage", json=payload)
+        resp.raise_for_status()
+        return resp.json()
+
+
+def build_task_keyboard(task_id: int) -> dict[str, Any]:
+    """Inline action keyboard attached to task reminder messages."""
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "✅ Done", "callback_data": f"done:{task_id}"},
+                {"text": "⚡ High", "callback_data": f"prio:high:{task_id}"},
+            ],
+            [
+                {"text": "⏰ Snooze 10m", "callback_data": f"snooze:10:{task_id}"},
+                {"text": "🗑️ Delete", "callback_data": f"del:{task_id}"},
+            ],
+        ]
+    }
+
+
+async def answer_callback_query(
+    callback_query_id: str, text: str = ""
+) -> dict[str, Any]:
+    """Acknowledge a callback_query so Telegram stops the button spinner."""
+    payload: dict[str, Any] = {"callback_query_id": callback_query_id}
+    if text:
+        payload["text"] = text
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(f"{_base_url()}/answerCallbackQuery", json=payload)
+        resp.raise_for_status()
+        return resp.json()
+
+
+async def edit_message_text(
+    chat_id: int | str,
+    message_id: int,
+    text: str,
+    *,
+    reply_markup: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Edit an existing message's text (and optionally its inline keyboard)."""
+    payload: dict[str, Any] = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "text": text,
+        "parse_mode": "HTML",
+    }
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(f"{_base_url()}/editMessageText", json=payload)
         resp.raise_for_status()
         return resp.json()
 
