@@ -2,19 +2,45 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from langchain_core.tools import tool
 
 from app.database import Todo, session_scope
 
+# User-facing timezone used for display and naive-date interpretation (IST).
+USER_TZ = timezone(timedelta(hours=5, minutes=30), name="IST")
+
+
+def _parse_due_date(value: str) -> datetime | None:
+    """Parse an ISO-8601 due-date string; return None if it is invalid.
+
+    Accepts a trailing 'Z' (UTC) and treats naive timestamps as IST.
+    """
+    text = value.strip()
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=USER_TZ)
+    return parsed
+
 
 def _format_todo(todo: Todo) -> str:
     desc = todo.description or "(no description)"
     created = todo.created_at.strftime("%Y-%m-%d %H:%M") if todo.created_at else "?"
+    due = (
+        f", due: {todo.due_date.astimezone(USER_TZ).strftime('%Y-%m-%d %H:%M IST')}"
+        if todo.due_date
+        else ""
+    )
     return (
         f"- [#{todo.id}] {todo.title} "
-        f"(status: {todo.status}, priority: {todo.priority}, created: {created})\n"
+        f"(status: {todo.status}, priority: {todo.priority}, created: {created}{due})\n"
         f"    {desc}"
     )
 
@@ -101,6 +127,7 @@ def add_todo(
     title: str,
     description: Optional[str] = "",
     priority: Optional[str] = "medium",
+    due_date: Optional[str] = None,
 ) -> str:
     """Add a new task to the database.
 
@@ -108,12 +135,20 @@ def add_todo(
         title: Short title of the task (required).
         description: Optional longer description. Defaults to empty.
         priority: One of 'low', 'medium', 'high'. Defaults to 'medium'.
+        due_date: Optional deadline as an ISO-8601 datetime string, e.g.
+            '2026-10-02T17:00:00+05:30'. Omit for no deadline.
 
     Returns:
         A confirmation message including the new task's id.
     """
     if not title or not title.strip():
         return "Error: a non-empty title is required to add a task."
+
+    parsed_due: datetime | None = None
+    if due_date and due_date.strip():
+        parsed_due = _parse_due_date(due_date)
+        if parsed_due is None:
+            return f"Error: due_date '{due_date}' is not a valid ISO-8601 datetime."
 
     clean_title = title.strip()
     clean_priority = (priority or "medium").strip().lower()
@@ -123,11 +158,17 @@ def add_todo(
             description=(description or "").strip() or None,
             priority=clean_priority,
             status="pending",
+            due_date=parsed_due,
         )
         session.add(todo)
         session.flush()  # populate todo.id before the session closes
         new_id = todo.id
-    return f"Added task #{new_id}: '{clean_title}' (priority: {clean_priority})."
+    due_note = (
+        f" (due: {parsed_due.astimezone(USER_TZ).strftime('%Y-%m-%d %H:%M IST')})"
+        if parsed_due
+        else ""
+    )
+    return f"Added task #{new_id}: '{clean_title}' (priority: {clean_priority}){due_note}."
 
 
 @tool
@@ -160,14 +201,18 @@ def update_task(
     task_id: int,
     priority: Optional[str] = None,
     title: Optional[str] = None,
+    due_date: Optional[str] = None,
 ) -> str:
-    """Update the priority and/or title of an existing task.
+    """Update the priority, title, and/or due date of an existing task.
 
     Args:
         task_id: The numeric id of the task to update.
         priority: New priority. One of 'low', 'medium', 'high'. Omit to leave
             the priority unchanged.
         title: New title. Omit to leave the title unchanged.
+        due_date: New deadline as an ISO-8601 datetime string. Omit to leave
+            the due date unchanged. Pass an empty string or 'clear' to remove
+            the existing deadline.
 
     Returns:
         A confirmation message, or an error if the task or priority is invalid
@@ -175,8 +220,14 @@ def update_task(
     """
     new_priority = priority.strip().lower() if priority else None
     new_title = title.strip() if title else None
-    if new_priority is None and not new_title:
-        return "Error: provide at least one of priority or title to update."
+    clear_due = due_date is not None and due_date.strip().lower() in {"", "clear", "none"}
+    new_due: datetime | None = None
+    if due_date is not None and not clear_due:
+        new_due = _parse_due_date(due_date)
+        if new_due is None:
+            return f"Error: due_date '{due_date}' is not a valid ISO-8601 datetime."
+    if new_priority is None and not new_title and due_date is None:
+        return "Error: provide at least one of priority, title, or due_date to update."
     if new_priority is not None and new_priority not in {"low", "medium", "high"}:
         return f"Error: priority must be one of ['high', 'low', 'medium'], got '{priority}'."
 
@@ -191,6 +242,13 @@ def update_task(
         if new_title:
             todo.title = new_title
             changes.append(f"title to '{new_title}'")
+        if clear_due:
+            todo.due_date = None
+            changes.append("due date cleared")
+        elif new_due is not None:
+            todo.due_date = new_due
+            due_text = new_due.astimezone(USER_TZ).strftime("%Y-%m-%d %H:%M IST")
+            changes.append(f"due date to '{due_text}'")
         current_title = todo.title
     return f"Updated task #{task_id} ('{current_title}'): set {' and '.join(changes)}."
 

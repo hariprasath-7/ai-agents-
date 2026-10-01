@@ -11,7 +11,15 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Generator
 
-from sqlalchemy import DateTime, Integer, String, Text, create_engine
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Integer,
+    String,
+    Text,
+    create_engine,
+    text,
+)
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.orm import (
     DeclarativeBase,
@@ -46,6 +54,15 @@ class Todo(Base):
         DateTime(timezone=True),
         nullable=False,
         default=lambda: datetime.now(timezone.utc),
+    )
+    due_date: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    reminded: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false"),
     )
 
     def __repr__(self) -> str:  # pragma: no cover - debug helper
@@ -123,7 +140,26 @@ def session_scope() -> Generator[Session, None, None]:
 def init_db() -> None:
     """Create tables if they don't exist, then seed sample data if empty."""
     Base.metadata.create_all(bind=get_engine())
+    _apply_lightweight_migrations()
     _seed_if_empty()
+
+
+def _apply_lightweight_migrations() -> None:
+    """Backfill columns added after initial deployment.
+
+    ``create_all`` only creates missing tables; it never alters existing ones.
+    These idempotent ALTER statements bring older databases up to date.
+    """
+    with get_engine().begin() as conn:
+        conn.execute(
+            text("ALTER TABLE todos ADD COLUMN IF NOT EXISTS due_date TIMESTAMPTZ;")
+        )
+        conn.execute(
+            text(
+                "ALTER TABLE todos ADD COLUMN IF NOT EXISTS reminded "
+                "BOOLEAN NOT NULL DEFAULT FALSE;"
+            )
+        )
 
 
 def _seed_if_empty() -> None:

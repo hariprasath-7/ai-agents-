@@ -15,6 +15,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app.agent import run_agent
 from app.config import settings
+from app.scheduler import record_active_chat
 from app.telegram import send_message
 
 logger = logging.getLogger(__name__)
@@ -73,6 +74,9 @@ async def telegram_webhook(
 
     if chat_id is None or not text:
         return {"ok": True}
+
+    # Remember this chat so the reminder worker knows where to send alerts.
+    record_active_chat(chat_id)
 
     background_tasks.add_task(_handle_message, chat_id, text)
     return {"ok": True}

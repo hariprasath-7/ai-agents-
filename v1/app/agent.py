@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 from functools import lru_cache
 
 from langchain.agents import create_agent
 
 from app.config import settings
-from app.tools import ALL_TOOLS
+from app.tools import ALL_TOOLS, USER_TZ
 
 SYSTEM_PROMPT = """You are a dedicated Task Management Assistant operating over \
 Telegram.
@@ -36,11 +37,23 @@ When listing tasks (e.g., the user asks for pending tasks or all tasks):
 4. If there are no tasks to list, respond cleanly:
    ✨ <i>No pending tasks found! You're all caught up.</i>
 
+Handling deadlines and dates:
+- The current date/time is provided with every message. Use it to resolve
+  relative expressions like "tomorrow at 5pm", "Friday 10 AM", or "in two
+  hours".
+- When the user gives a deadline, compute the exact ISO-8601 timestamp
+  (YYYY-MM-DDTHH:MM:SS+05:30, or a Z suffix for UTC) and pass it as the
+  due_date argument to add_todo or update_task. Never pass vague strings like
+  "tomorrow" or "next week" as due_date.
+- When listing tasks, mention the due date if one is set.
+
 When confirming a single action, use these exact patterns (concise and friendly):
 1. Adding a task:
    ✅ <b>Task Created</b> [#ID]
    <b>Title:</b> <code>task title</code>
    <b>Priority:</b> High | Medium | Low
+   <b>Due:</b> <code>DD MMM YYYY, HH:MM</code> (include this line only if a
+   due date was set)
 2. Updating a task's priority or title:
    ⚡ <b>Updated Task #ID</b>
    Changed priority to <b>High/Medium/Low</b> (or title to <code>new title</code>)
@@ -117,6 +130,16 @@ def extract_text(content) -> str:
     return str(content)
 
 
+def _temporal_context() -> str:
+    """Fresh 'current time' header so the model can resolve relative dates."""
+    now_utc = datetime.now(timezone.utc)
+    now_local = now_utc.astimezone(USER_TZ)
+    return (
+        f"Current Time: {now_utc.isoformat()} "
+        f"({now_local.strftime('%Y-%m-%d %H:%M')} IST is UTC+5:30)"
+    )
+
+
 def run_agent(prompt: str) -> str:
     """Invoke the agent with a single user prompt and return its clean text reply.
 
@@ -124,6 +147,9 @@ def run_agent(prompt: str) -> str:
     loop, since the underlying LLM + DB calls are blocking.
     """
     agent = get_agent()
-    result = agent.invoke({"messages": [{"role": "user", "content": prompt}]})
+    # The agent (and its system prompt) is cached, so the live clock is
+    # injected per message here instead of being frozen at build time.
+    full_prompt = f"[{_temporal_context()}]\n{prompt}"
+    result = agent.invoke({"messages": [{"role": "user", "content": full_prompt}]})
     last_message = result["messages"][-1]
     return extract_text(last_message.content)

@@ -42,6 +42,11 @@ class Settings(BaseSettings):
     )
     # Public base URL of this service, e.g. https://myapp.example.com
     webhook_base_url: str = Field(default="", alias="WEBHOOK_BASE_URL")
+    # Chat id that receives proactive due-date reminders. When empty, the bot
+    # falls back to the most recent chat that messaged it.
+    default_telegram_chat_id: str = Field(
+        default="", alias="DEFAULT_TELEGRAM_CHAT_ID"
+    )
 
     @property
     def resolved_google_key(self) -> str:

@@ -5,6 +5,7 @@ Run locally with:  uvicorn main:app --reload
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -13,6 +14,7 @@ from fastapi import FastAPI
 from app.config import settings
 from app.database import init_db
 from app.routes import health, webhook
+from app.scheduler import check_reminders_loop
 from app.telegram import set_webhook
 
 logging.basicConfig(level=logging.INFO)
@@ -33,7 +35,17 @@ async def lifespan(app: FastAPI):
         except Exception:  # noqa: BLE001 - never block startup on this
             logger.exception("Failed to set Telegram webhook on startup.")
 
+    reminder_task = asyncio.create_task(check_reminders_loop())
+    logger.info("Reminder worker started.")
+
     yield
+
+    reminder_task.cancel()
+    try:
+        await reminder_task
+    except asyncio.CancelledError:
+        pass
+    logger.info("Reminder worker stopped.")
 
 
 app = FastAPI(title="Telegram AI Agent", version="1.0.0", lifespan=lifespan)
