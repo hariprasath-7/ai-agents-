@@ -1,3 +1,31 @@
-.env
+# Virtual Environment
 .venv/
+venv/
+env/
+ENV/
+
+# Python Cache & Bytecode
 __pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Environment Variables & Sensitive Credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local Tool / Editor Configurations
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Tunneling & Log Artifacts
+*.log
+ngrok
+ngrok.exe
+.claude/
