@@ -1,0 +1,8 @@
+.git
+.gitignore
+v0/
+V1_SUMMARY.md
+__pycache__/
+*.pyc
+# Never bake secrets into the image.
+v1/.env
