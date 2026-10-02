@@ -9,5 +9,5 @@ router = APIRouter(tags=["health"])
 
 @router.get("/health")
 async def health() -> dict[str, str]:
-    """Liveness probe. Returns a static OK payload."""
-    return {"status": "ok"}
+    """Liveness probe. Returns a static payload — no DB, no middleware, no LLM."""
+    return {"status": "alive"}

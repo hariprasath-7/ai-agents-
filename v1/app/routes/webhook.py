@@ -11,7 +11,15 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Header,
+    HTTPException,
+    Request,
+    Response,
+    status,
+)
 from starlette.concurrency import run_in_threadpool
 
 from app.agent import run_agent
@@ -172,43 +180,56 @@ async def _handle_callback_query(callback_query: dict[str, Any]) -> None:
                 logger.exception("Failed to send callback receipt to chat %s", chat_id)
 
 
+async def process_telegram_update(payload: dict[str, Any]) -> None:
+    """Background worker for one Telegram update.
+
+    Runs after the webhook has already returned 200, so Gemini parsing,
+    database writes, and outbound Telegram calls here never delay the ack.
+    Every exception is logged — nothing may fail silently.
+    """
+    try:
+        # Inline keyboard button presses arrive as callback_query updates.
+        callback_query = payload.get("callback_query")
+        if callback_query:
+            await _handle_callback_query(callback_query)
+            return
+
+        # Handle both fresh messages and edited messages.
+        message = payload.get("message") or payload.get("edited_message")
+        if not message:
+            # Nothing actionable (e.g. a non-message update); nothing to do.
+            return
+
+        chat = message.get("chat") or {}
+        chat_id = chat.get("id")
+        text = (message.get("text") or "").strip()
+
+        if chat_id is None or not text:
+            return
+
+        # Remember this chat so the reminder worker knows where to send alerts.
+        record_active_chat(chat_id)
+
+        await _handle_message(chat_id, text)
+    except Exception:  # noqa: BLE001 - background task must never crash silently
+        logger.exception("Unhandled error while processing Telegram update.")
+
+
 @router.post("/webhook")
 async def telegram_webhook(
     request: Request,
     background_tasks: BackgroundTasks,
     x_telegram_bot_api_secret_token: str | None = Header(default=None),
-) -> dict[str, bool]:
+) -> Response:
     """Entry point for Telegram updates.
 
-    Validates the secret token, extracts the chat id and text from the update,
-    schedules background processing, and returns immediately.
+    Validates the secret token, hands the raw payload to a background worker,
+    and acks with an empty 200 so Telegram's short webhook timeout is never
+    exceeded — all real work (Gemini, DB, outbound sends) happens off-thread.
     """
     _verify_secret(x_telegram_bot_api_secret_token)
 
-    update: dict[str, Any] = await request.json()
+    payload: dict[str, Any] = await request.json()
 
-    # Inline keyboard button presses arrive as callback_query updates.
-    callback_query = update.get("callback_query")
-    if callback_query:
-        background_tasks.add_task(_handle_callback_query, callback_query)
-        return {"ok": True}
-
-    # Handle both fresh messages and edited messages.
-    message = update.get("message") or update.get("edited_message")
-    if not message:
-        # Nothing actionable (e.g. a non-message update); ack so Telegram
-        # doesn't retry.
-        return {"ok": True}
-
-    chat = message.get("chat") or {}
-    chat_id = chat.get("id")
-    text = (message.get("text") or "").strip()
-
-    if chat_id is None or not text:
-        return {"ok": True}
-
-    # Remember this chat so the reminder worker knows where to send alerts.
-    record_active_chat(chat_id)
-
-    background_tasks.add_task(_handle_message, chat_id, text)
-    return {"ok": True}
+    background_tasks.add_task(process_telegram_update, payload)
+    return Response(status_code=status.HTTP_200_OK)
